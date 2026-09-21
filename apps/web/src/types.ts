@@ -13,6 +13,7 @@ export type Material = {
   subtype: string | null;
   stockUnit: string;
   lowStockThreshold: string | null;
+  adjustmentReviewThreshold: string | null;
   defaultColorName: string | null;
   defaultColorHex: string | null;
   tags: string[];
@@ -111,6 +112,26 @@ export type Consumption = {
   reversalReason: string | null;
 };
 
+export type AdjustmentRequest = {
+  id: string;
+  batchId: string;
+  batchCode: string | null;
+  materialId: string;
+  materialName: string;
+  direction: "IN" | "OUT";
+  quantity: string;
+  stockUnit: string;
+  reason: string;
+  threshold: string;
+  status: string;
+  reviewNote: string | null;
+  createdByName: string | null;
+  reviewedByName: string | null;
+  reviewedAt: string | null;
+  createdAt: string;
+  createdByCurrentSession: boolean;
+};
+
 export const craftTypeLabels: Record<string, string> = {
   DYEING: "染布",
   WOODWORKING: "木工",
@@ -137,4 +158,10 @@ export const movementLabels: Record<string, string> = {
   ADJUSTMENT_IN: "盘增",
   ADJUSTMENT_OUT: "盘减",
   REVERSAL: "撤销恢复"
+};
+
+export const adjustmentRequestStatusLabels: Record<string, string> = {
+  PENDING: "待复核",
+  APPROVED: "已批准",
+  REJECTED: "已拒绝"
 };

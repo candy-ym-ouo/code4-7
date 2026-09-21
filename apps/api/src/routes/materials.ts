@@ -92,6 +92,7 @@ export async function materialRoutes(app: FastifyInstance): Promise<void> {
       ), rows AS (
         SELECT m.id, m.code, m.name, m.craft_types AS "craftTypes", m.subtype,
                m.stock_unit AS "stockUnit", m.low_stock_threshold::text AS "lowStockThreshold",
+               m.adjustment_review_threshold::text AS "adjustmentReviewThreshold",
                m.default_color_name AS "defaultColorName", m.default_color_hex AS "defaultColorHex",
                m.tags, m.notes, m.archived_at AS "archivedAt", m.created_at AS "createdAt",
                m.updated_at AS "updatedAt", m.version,
@@ -140,7 +141,9 @@ export async function materialRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { id: string } }>("/materials/:id", async (request) => {
     const material = await pool.query(
       `SELECT m.id, m.code, m.name, m.craft_types AS "craftTypes", m.subtype, m.stock_unit AS "stockUnit",
-              m.low_stock_threshold::text AS "lowStockThreshold", m.default_color_name AS "defaultColorName",
+              m.low_stock_threshold::text AS "lowStockThreshold",
+              m.adjustment_review_threshold::text AS "adjustmentReviewThreshold",
+              m.default_color_name AS "defaultColorName",
               m.default_color_hex AS "defaultColorHex", m.tags, m.notes, m.archived_at AS "archivedAt",
               m.created_at AS "createdAt", m.updated_at AS "updatedAt", m.version,
               coalesce(sum(b.remaining_quantity) FILTER (WHERE b.status <> 'ARCHIVED'), 0)::text AS "remainingQuantity",
@@ -169,11 +172,12 @@ export async function materialRoutes(app: FastifyInstance): Promise<void> {
     const created = await withTransaction(async (client) => {
       const result = await client.query(
         `INSERT INTO materials(code, name, craft_types, subtype, stock_unit, low_stock_threshold,
-          default_color_name, default_color_hex, tags, notes)
-         VALUES ($1, $2, $3::craft_type[], $4, $5::stock_unit, $6, $7, $8, $9::text[], $10)
+          adjustment_review_threshold, default_color_name, default_color_hex, tags, notes)
+         VALUES ($1, $2, $3::craft_type[], $4, $5::stock_unit, $6, $7, $8, $9, $10::text[], $11)
          RETURNING *`,
         [input.code || null, input.name, input.craftTypes, input.subtype || null, input.stockUnit,
-         input.lowStockThreshold ?? null, input.defaultColorName || null, input.defaultColorHex || null, input.tags, input.notes || null]
+         input.lowStockThreshold ?? null, input.adjustmentReviewThreshold ?? null,
+         input.defaultColorName || null, input.defaultColorHex || null, input.tags, input.notes || null]
       );
       await writeAudit(client, { actorUserId: user.id, action: "CREATE", entityType: "MATERIAL", entityId: result.rows[0]?.id, afterData: result.rows[0], requestId: request.id });
       return result.rows[0];
@@ -208,16 +212,18 @@ export async function materialRoutes(app: FastifyInstance): Promise<void> {
           subtype = CASE WHEN $5::boolean THEN $6 ELSE subtype END,
           stock_unit = coalesce($7::stock_unit, stock_unit),
           low_stock_threshold = CASE WHEN $8::boolean THEN $9 ELSE low_stock_threshold END,
-          default_color_name = CASE WHEN $10::boolean THEN $11 ELSE default_color_name END,
-          default_color_hex = CASE WHEN $12::boolean THEN $13 ELSE default_color_hex END,
-          tags = coalesce($14::text[], tags),
-          notes = CASE WHEN $15::boolean THEN $16 ELSE notes END,
+          adjustment_review_threshold = CASE WHEN $10::boolean THEN $11 ELSE adjustment_review_threshold END,
+          default_color_name = CASE WHEN $12::boolean THEN $13 ELSE default_color_name END,
+          default_color_hex = CASE WHEN $14::boolean THEN $15 ELSE default_color_hex END,
+          tags = coalesce($16::text[], tags),
+          notes = CASE WHEN $17::boolean THEN $18 ELSE notes END,
           version = version + 1
-         WHERE id = $17 RETURNING *`,
+         WHERE id = $19 RETURNING *`,
         [
           "code" in input, input.code || null, input.name ?? null, input.craftTypes ?? null,
           "subtype" in input, input.subtype || null, input.stockUnit ?? null,
           "lowStockThreshold" in input, input.lowStockThreshold ?? null,
+          "adjustmentReviewThreshold" in input, input.adjustmentReviewThreshold ?? null,
           "defaultColorName" in input, input.defaultColorName || null,
           "defaultColorHex" in input, input.defaultColorHex || null,
           input.tags ?? null, "notes" in input, input.notes || null, request.params.id

@@ -10,6 +10,7 @@
 - 分页：`page`、`pageSize`，最大 100。
 - 幂等：批次入库、库存调整和材料消耗支持 `Idempotency-Key`。
 - 乐观锁：更新请求携带 `version`。
+- 复核：超过材料复核阈值的库存调整先暂存（HTTP 202），由第二人在另一会话中批准后入账。
 
 成功响应：
 
@@ -94,6 +95,7 @@
   "subtype": "天然染料",
   "stockUnit": "g",
   "lowStockThreshold": "200",
+  "adjustmentReviewThreshold": "500",
   "defaultColorName": "原木棕",
   "defaultColorHex": "#8B5A2B",
   "tags": ["天然", "染布"]
@@ -107,7 +109,7 @@
 | GET/POST | `/batches` | 批次查询或入库 |
 | GET/PATCH | `/batches/:id` | 详情或非库存字段更新 |
 | GET | `/batches/:id/movements` | 库存流水 |
-| POST | `/batches/:id/adjustments` | 库存调整 |
+| POST | `/batches/:id/adjustments` | 库存调整（超阈值自动暂存） |
 | POST | `/batches/:id/archive` | 归档无余额批次 |
 
 创建批次：
@@ -139,7 +141,32 @@
 
 同一 `Idempotency-Key` 重试不会重复调整。
 
-## 6. 项目与需求
+材料设置了 `adjustmentReviewThreshold`（按库存单位计）时，单次调整量超过阈值不会直接入账，而是暂存为待复核请求并返回 HTTP 202，响应 `data.kind` 为 `"PENDING_REVIEW"`；未超阈值或未设置阈值时直接入账（HTTP 201，`data.kind` 为 `"POSTED"`）。暂存的调整不改动批次余额，批次详情 `pendingAdjustments` 会列出待复核请求。
+
+## 6. 调整复核
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/adjustment-requests` | 复核请求列表，支持 `status=PENDING\|APPROVED\|REJECTED`、`batchId` 和分页 |
+| POST | `/adjustment-requests/:id/approve` | 第二人批准，同一事务内写入流水并更新余额 |
+| POST | `/adjustment-requests/:id/reject` | 第二人拒绝，库存不变 |
+
+批准或拒绝请求体：
+
+```json
+{
+  "password": "复核人输入的操作员密码",
+  "note": "复核意见，可选"
+}
+```
+
+复核规则：
+
+- 提交调整的会话不能复核自己的请求（`SELF_REVIEW_NOT_ALLOWED`），复核人需重新登录后在请求体中提供操作员密码。
+- 批准与流水写入在同一事务完成；盘减方向在批准时重新校验批次余额，不足则保持待复核（`INSUFFICIENT_STOCK`）。
+- 一条复核请求最多产生一条库存流水（数据库唯一约束），重复批准或拒绝返回 `409 ALREADY_REVIEWED`，余额绝不重复增减。
+
+## 7. 项目与需求
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -162,7 +189,7 @@
 }
 ```
 
-## 7. 消耗与撤销
+## 8. 消耗与撤销
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -195,7 +222,7 @@
 }
 ```
 
-## 8. 颜色变化
+## 9. 颜色变化
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -221,7 +248,7 @@
 
 颜色变化不扣库存。
 
-## 9. 附件和导出
+## 10. 附件和导出
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |

@@ -25,6 +25,9 @@ export type MovementType = (typeof movementTypes)[number];
 export const projectStatuses = ["PLANNED", "IN_PROGRESS", "COMPLETED", "ARCHIVED"] as const;
 export type ProjectStatus = (typeof projectStatuses)[number];
 
+export const adjustmentRequestStatuses = ["PENDING", "APPROVED", "REJECTED"] as const;
+export type AdjustmentRequestStatus = (typeof adjustmentRequestStatuses)[number];
+
 export const colorChangeTypes = [
   "OXIDATION",
   "DYE_BATH",
@@ -147,6 +150,7 @@ export const materialInputSchema = z.object({
   subtype: z.string().trim().max(80).nullable().optional(),
   stockUnit: z.enum(stockUnits),
   lowStockThreshold: decimalQuantity.nullable().optional(),
+  adjustmentReviewThreshold: decimalQuantity.nullable().optional(),
   defaultColorName: z.string().trim().max(80).nullable().optional(),
   defaultColorHex: z.union([colorHex, z.literal("")]).nullable().optional(),
   tags: z.array(z.string().trim().min(1).max(40)).max(30).default([]),
@@ -183,6 +187,11 @@ export const adjustmentSchema = z.object({
   unit: z.enum(stockUnits),
   reason: z.string().trim().min(3).max(1000),
   version: z.number().int().positive()
+});
+
+export const adjustmentReviewSchema = z.object({
+  password: z.string().min(1).max(128),
+  note: z.string().trim().max(1000).nullable().optional()
 });
 
 export const projectInputSchema = z.object({

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { batchCreateSchema, colorChangeInputSchema, consumptionInputSchema, convertQuantity } from "@handcraft/contracts";
+import { adjustmentReviewSchema, batchCreateSchema, colorChangeInputSchema, consumptionInputSchema, convertQuantity, materialInputSchema } from "@handcraft/contracts";
 
 describe("API business validation contracts", () => {
   it("normalizes a valid batch payload", () => {
@@ -39,5 +39,24 @@ describe("API business validation contracts", () => {
   it("keeps inventory units in compatible families", () => {
     expect(convertQuantity("2.5", "l", "ml")).toBe("2500.000000");
     expect(() => convertQuantity("2.5", "l", "kg")).toThrow();
+  });
+
+  it("accepts an optional adjustment review threshold on materials", () => {
+    const base = {
+      name: "苏木染材",
+      craftTypes: ["DYEING"],
+      stockUnit: "g"
+    };
+    expect(materialInputSchema.safeParse({ ...base, adjustmentReviewThreshold: "500" }).success).toBe(true);
+    expect(materialInputSchema.safeParse({ ...base, adjustmentReviewThreshold: null }).success).toBe(true);
+    expect(materialInputSchema.safeParse({ ...base, adjustmentReviewThreshold: "-1" }).success).toBe(false);
+    expect(materialInputSchema.safeParse({ ...base, adjustmentReviewThreshold: "1.0000001" }).success).toBe(false);
+  });
+
+  it("requires a review password for adjustment review decisions", () => {
+    expect(adjustmentReviewSchema.safeParse({ password: "second-person-password" }).success).toBe(true);
+    expect(adjustmentReviewSchema.safeParse({ password: "second-person-password", note: "盘点确认" }).success).toBe(true);
+    expect(adjustmentReviewSchema.safeParse({ password: "" }).success).toBe(false);
+    expect(adjustmentReviewSchema.safeParse({}).success).toBe(false);
   });
 });

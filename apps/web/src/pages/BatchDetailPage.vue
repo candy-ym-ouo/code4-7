@@ -49,12 +49,16 @@ async function submitAdjustment() {
   }
   saving.value = true;
   try {
-    await request(`/batches/${batch.value.id}/adjustments`, {
+    const response = await request<{ data: { kind: string } }>(`/batches/${batch.value.id}/adjustments`, {
       method: "POST",
       headers: { "Idempotency-Key": createIdempotencyKey() },
       body: { ...adjustment, version: batch.value.version }
     });
-    ElMessage.success("库存调整已入账");
+    if (response.data.kind === "PENDING_REVIEW") {
+      ElMessage.warning("调整量超过复核阈值，已暂存，等待第二人复核后入账");
+    } else {
+      ElMessage.success("库存调整已入账");
+    }
     adjustmentVisible.value = false;
     Object.assign(adjustment, { direction: "OUT", quantity: "", reason: "" });
     await load();
@@ -165,6 +169,19 @@ onMounted(load);
       </section>
 
       <AttachmentPanel owner-type="BATCH" :owner-id="batch.id" :attachments="batch.attachments" @changed="load" />
+
+      <section v-if="batch.pendingAdjustments?.length" class="panel" style="margin-bottom:16px">
+        <h2>待复核调整</h2>
+        <el-alert title="以下调整已超过复核阈值，暂存待确认，需第二人复核后才会入账。" type="warning" show-icon :closable="false" style="margin-bottom:12px" />
+        <el-table :data="batch.pendingAdjustments" size="small">
+          <el-table-column label="提交时间" width="170"><template #default="{ row }">{{ new Date(row.createdAt).toLocaleString() }}</template></el-table-column>
+          <el-table-column label="方向" width="80"><template #default="{ row }">{{ row.direction === "IN" ? "盘增" : "盘减" }}</template></el-table-column>
+          <el-table-column label="数量" width="140"><template #default="{ row }"><span class="amount">{{ row.quantity }} {{ row.stockUnit }}</span></template></el-table-column>
+          <el-table-column label="复核阈值" width="120"><template #default="{ row }">{{ row.threshold }} {{ row.stockUnit }}</template></el-table-column>
+          <el-table-column label="原因" prop="reason" min-width="160" />
+          <el-table-column width="110"><template #default><el-button size="small" type="primary" plain @click="router.push('/reviews')">前往复核</el-button></template></el-table-column>
+        </el-table>
+      </section>
 
       <div class="two-column">
         <section class="panel">

@@ -17,6 +17,7 @@ const form = reactive({
   subtype: "",
   stockUnit: "g",
   lowStockThreshold: "",
+  adjustmentReviewThreshold: "",
   defaultColorName: "",
   defaultColorHex: "",
   tagsText: "",
@@ -35,6 +36,7 @@ async function load() {
       subtype: m.subtype || "",
       stockUnit: m.stockUnit,
       lowStockThreshold: m.lowStockThreshold || "",
+      adjustmentReviewThreshold: m.adjustmentReviewThreshold || "",
       defaultColorName: m.defaultColorName || "",
       defaultColorHex: m.defaultColorHex || "",
       tagsText: m.tags?.join("，") || "",
@@ -60,6 +62,7 @@ async function submit() {
       subtype: form.subtype || null,
       stockUnit: form.stockUnit,
       lowStockThreshold: form.lowStockThreshold || null,
+      adjustmentReviewThreshold: form.adjustmentReviewThreshold || null,
       defaultColorName: form.defaultColorName || null,
       defaultColorHex: form.defaultColorHex || null,
       tags: form.tagsText.split(/[,，]/).map((item) => item.trim()).filter(Boolean),
@@ -105,6 +108,7 @@ onMounted(load);
             </el-select>
           </el-form-item>
           <el-form-item label="低库存阈值"><el-input v-model="form.lowStockThreshold" placeholder="留空表示不预警，例如 200" /></el-form-item>
+          <el-form-item label="调整复核阈值"><el-input v-model="form.adjustmentReviewThreshold" placeholder="留空表示调整直接入账，例如 500" /></el-form-item>
           <el-form-item label="默认颜色名称"><el-input v-model="form.defaultColorName" maxlength="80" /></el-form-item>
           <el-form-item label="默认颜色值">
             <div style="display:flex; gap:10px; width:100%"><el-color-picker v-model="form.defaultColorHex" /><el-input v-model="form.defaultColorHex" placeholder="#RRGGBB" /></div>

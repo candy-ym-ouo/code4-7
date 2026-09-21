@@ -6,21 +6,36 @@ if (!configuredPassword) {
 let cookie = "";
 
 async function callWithStatus(path, options = {}) {
-  const headers = new Headers(options.headers);
-  if (cookie) headers.set("cookie", cookie);
-  if (options.body !== undefined && !(options.body instanceof FormData)) headers.set("content-type", "application/json");
+  const { cookie: cookieOverride, ...rest } = options;
+  const headers = new Headers(rest.headers);
+  const activeCookie = cookieOverride ?? cookie;
+  if (activeCookie) headers.set("cookie", activeCookie);
+  if (rest.body !== undefined && !(rest.body instanceof FormData)) headers.set("content-type", "application/json");
   const response = await fetch(`${baseUrl}/api/v1${path}`, {
-    ...options,
+    ...rest,
     headers,
-    body: options.body instanceof FormData ? options.body : options.body === undefined ? undefined : JSON.stringify(options.body)
+    body: rest.body instanceof FormData ? rest.body : rest.body === undefined ? undefined : JSON.stringify(rest.body)
   });
   const setCookie = response.headers.get("set-cookie");
-  if (setCookie) cookie = setCookie.split(";")[0];
+  if (setCookie && cookieOverride === undefined) cookie = setCookie.split(";")[0];
   const payload = response.status === 204 ? null : await response.json();
   if (!response.ok) {
-    throw new Error(`${options.method ?? "GET"} ${path} -> ${response.status} ${JSON.stringify(payload)}`);
+    const error = new Error(`${rest.method ?? "GET"} ${path} -> ${response.status} ${JSON.stringify(payload)}`);
+    error.status = response.status;
+    throw error;
   }
   return { status: response.status, data: payload };
+}
+
+async function login(password) {
+  const response = await fetch(`${baseUrl}/api/v1/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ password })
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(`login -> ${response.status} ${JSON.stringify(payload)}`);
+  return response.headers.get("set-cookie").split(";")[0];
 }
 
 async function call(path, options = {}) {
@@ -49,6 +64,8 @@ const material = await call("/materials", {
     craftTypes: ["GENERAL"],
     stockUnit: "g",
     lowStockThreshold: "100",
+    adjustmentReviewThreshold: "100",
+    adjustmentReviewThreshold: "100",
     defaultColorName: "Original",
     defaultColorHex: "#8B5A2B",
     tags: ["smoke"]
@@ -151,6 +168,90 @@ await call(`/consumptions/${consumption.id}/reverse`, { method: "POST", body: { 
 const afterReversal = await call(`/batches/${batch.id}`);
 assert(afterReversal.data.remainingQuantity === "1000.000000", "Batch balance after reversal is incorrect");
 assert(afterReversal.data.movements[0].type === "REVERSAL", "Reversal movement was not created");
+
+// 调整复核链：阈值内直接入账，超限暂存，双人复核后入账，重复批准不动账。
+const smallAdjustment = await callWithStatus(`/batches/${batch.id}/adjustments`, {
+  method: "POST",
+  headers: { "idempotency-key": `smoke-adjust-small-${suffix}` },
+  body: { direction: "IN", quantity: "50", unit: "g", reason: "Smoke small adjustment", version: afterReversal.data.version }
+});
+assert(smallAdjustment.status === 201 && smallAdjustment.data.data.kind === "POSTED", "Under-threshold adjustment should post directly");
+
+const afterSmallAdjustment = await call(`/batches/${batch.id}`);
+assert(afterSmallAdjustment.data.remainingQuantity === "1050.000000", "Small adjustment balance is incorrect");
+
+const staged = await callWithStatus(`/batches/${batch.id}/adjustments`, {
+  method: "POST",
+  headers: { "idempotency-key": `smoke-adjust-large-${suffix}` },
+  body: { direction: "OUT", quantity: "200", unit: "g", reason: "Smoke large adjustment", version: afterSmallAdjustment.data.version }
+});
+assert(staged.status === 202 && staged.data.data.kind === "PENDING_REVIEW", "Over-threshold adjustment should be staged for review");
+const stagedId = staged.data.data.id;
+
+const stagedRetry = await callWithStatus(`/batches/${batch.id}/adjustments`, {
+  method: "POST",
+  headers: { "idempotency-key": `smoke-adjust-large-${suffix}` },
+  body: { direction: "OUT", quantity: "200", unit: "g", reason: "Smoke large adjustment", version: afterSmallAdjustment.data.version }
+});
+assert(stagedRetry.status === 200 && stagedRetry.data.data.id === stagedId, "Staged adjustment idempotency returned a different request");
+
+const duringReview = await call(`/batches/${batch.id}`);
+assert(duringReview.data.remainingQuantity === "1050.000000", "Staged adjustment must not change the balance");
+assert(duringReview.data.pendingAdjustments.length === 1, "Pending adjustment is not listed on the batch");
+
+const selfApprove = await callWithStatus(`/adjustment-requests/${stagedId}/approve`, {
+  method: "POST",
+  body: { password: configuredPassword }
+}).catch((error) => error);
+assert(selfApprove.status === 409, "Approving from the creator session must be rejected");
+
+const reviewerCookie = await login(configuredPassword);
+const wrongPassword = await callWithStatus(`/adjustment-requests/${stagedId}/approve`, {
+  method: "POST",
+  cookie: reviewerCookie,
+  body: { password: "wrong-review-password" }
+}).catch((error) => error);
+assert(wrongPassword.status === 401, "Wrong review password must be rejected");
+
+const approved = await callWithStatus(`/adjustment-requests/${stagedId}/approve`, {
+  method: "POST",
+  cookie: reviewerCookie,
+  body: { password: configuredPassword, note: "Smoke review approved" }
+});
+assert(approved.status === 200 && approved.data.data.status === "APPROVED", "Second-person approval failed");
+const afterApprove = await call(`/batches/${batch.id}`);
+assert(afterApprove.data.remainingQuantity === "850.000000", "Approved adjustment balance is incorrect");
+
+const repeatedApprove = await callWithStatus(`/adjustment-requests/${stagedId}/approve`, {
+  method: "POST",
+  cookie: reviewerCookie,
+  body: { password: configuredPassword }
+}).catch((error) => error);
+assert(repeatedApprove.status === 409, "Repeated approval must be rejected");
+const afterRepeatedApprove = await call(`/batches/${batch.id}`);
+assert(afterRepeatedApprove.data.remainingQuantity === "850.000000", "Repeated approval must not change the balance again");
+
+const stagedIn = await callWithStatus(`/batches/${batch.id}/adjustments`, {
+  method: "POST",
+  headers: { "idempotency-key": `smoke-adjust-reject-${suffix}` },
+  body: { direction: "IN", quantity: "300", unit: "g", reason: "Smoke rejected adjustment", version: afterRepeatedApprove.data.version }
+});
+assert(stagedIn.status === 202, "Second large adjustment should be staged");
+const rejected = await callWithStatus(`/adjustment-requests/${stagedIn.data.data.id}/reject`, {
+  method: "POST",
+  cookie: reviewerCookie,
+  body: { password: configuredPassword, note: "Smoke review rejected" }
+});
+assert(rejected.status === 200 && rejected.data.data.status === "REJECTED", "Second-person rejection failed");
+
+const afterReject = await call(`/batches/${batch.id}`);
+assert(afterReject.data.remainingQuantity === "850.000000", "Rejected adjustment must not change the balance");
+const adjustmentOuts = afterReject.data.movements.filter((movement) => movement.type === "ADJUSTMENT_OUT");
+assert(adjustmentOuts.length === 1, "Expected exactly one ADJUSTMENT_OUT movement after the review chain");
+assert(adjustmentOuts[0].referenceType === "ADJUSTMENT_REQUEST", "Approved adjustment movement should reference the review request");
+
+const approvedList = await call("/adjustment-requests?status=APPROVED");
+assert(approvedList.data.some((item) => item.id === stagedId), "Approved request is missing from the review list");
 
 const search = await call(`/materials?${new URLSearchParams({ q: `Smoke Material ${suffix}`, craftType: "GENERAL", color: "Smoke Brown", stockState: "in_stock" })}`);
 assert(search.meta.total >= 1, "Material search did not find the smoke-test material");

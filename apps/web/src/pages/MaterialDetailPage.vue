@@ -52,6 +52,7 @@ onMounted(load);
         <article class="stat-card"><small>当前聚合库存</small><strong>{{ material.remainingQuantity }} {{ material.stockUnit }}</strong></article>
         <article class="stat-card"><small>有效批次</small><strong>{{ material.batchCount }}</strong></article>
         <article class="stat-card"><small>低库存阈值</small><strong>{{ material.lowStockThreshold || "未设置" }}</strong></article>
+        <article class="stat-card"><small>调整复核阈值</small><strong>{{ material.adjustmentReviewThreshold ? `${material.adjustmentReviewThreshold} ${material.stockUnit}` : "不复核" }}</strong></article>
       </section>
       <section class="panel" style="margin-top: 16px">
         <h2>材料档案</h2>

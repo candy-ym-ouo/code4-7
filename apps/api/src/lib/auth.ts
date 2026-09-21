@@ -10,6 +10,7 @@ const SESSION_DAYS = 7;
 export type AuthUser = {
   id: string;
   displayName: string;
+  sessionId: string;
 };
 
 export type AuthenticatedRequest = FastifyRequest & { authUser: AuthUser };
@@ -61,8 +62,9 @@ export async function authenticate(request: FastifyRequest): Promise<void> {
   const result = await pool.query<{
     id: string;
     display_name: string;
+    session_id: string;
   }>(
-    `SELECT u.id, u.display_name
+    `SELECT u.id, u.display_name, s.id AS session_id
        FROM sessions s
        JOIN users u ON u.id = s.user_id
       WHERE s.token_hash = $1
@@ -78,7 +80,8 @@ export async function authenticate(request: FastifyRequest): Promise<void> {
 
   (request as AuthenticatedRequest).authUser = {
     id: user.id,
-    displayName: user.display_name
+    displayName: user.display_name,
+    sessionId: user.session_id
   };
 }
 

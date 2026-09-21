@@ -10,6 +10,9 @@
 - 分页：`page`、`pageSize`，最大 100。
 - 幂等：批次入库、库存调整和材料消耗支持 `Idempotency-Key`。
 - 乐观锁：更新请求携带 `version`。
+- 差异阈值：库存调整幅度 `|调整数量| / 调整前结余` 超过
+  `ADJUSTMENT_REVIEW_THRESHOLD_RATIO`（默认 0.1）时不直接入账，而是生成
+  `PENDING` 调整单等待第二位操作员复核；调整前结余为 0 时一律需要复核。
 
 成功响应：
 
@@ -30,25 +33,39 @@
 }
 ```
 
-## 2. 认证
+## 2. 认证与操作员
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/setup/status` | 查询是否完成初始化 |
-| POST | `/setup` | 创建唯一操作员 |
-| POST | `/auth/login` | 登录 |
+| POST | `/setup` | 创建首位管理员 |
+| POST | `/auth/login` | 账号密码登录 |
 | POST | `/auth/logout` | 退出 |
 | GET | `/auth/me` | 当前操作员 |
 | POST | `/auth/password` | 修改密码 |
+| GET/POST | `/users` | 操作员列表 / 新增（仅管理员） |
+| POST | `/users/:id/deactivate` | 停用操作员（仅管理员） |
+
+系统支持多名操作员（`ADMIN` / `OPERATOR`）。超阈值结余调整的复核人必须
+**不是**调整申请人；已停用账号的会话立即失效。
 
 初始化请求：
 
 ```json
 {
-  "displayName": "工作室操作员",
+  "loginName": "admin",
+  "displayName": "工作室管理员",
   "password": "至少10位密码"
 }
 ```
+
+登录请求：
+
+```json
+{ "loginName": "admin", "password": "操作员密码" }
+```
+
+`loginName` 须以字母开头，由 3-40 位字母、数字、下划线或连字符组成。
 
 ## 3. 来源与位置
 
@@ -107,8 +124,13 @@
 | GET/POST | `/batches` | 批次查询或入库 |
 | GET/PATCH | `/batches/:id` | 详情或非库存字段更新 |
 | GET | `/batches/:id/movements` | 库存流水 |
-| POST | `/batches/:id/adjustments` | 库存调整 |
+| POST | `/batches/:id/adjustments` | 库存调整（阈值内直接入账，超阈值暂存待复核） |
 | POST | `/batches/:id/archive` | 归档无余额批次 |
+| GET | `/adjustment-requests` | 调整单列表，`status=PENDING/APPROVED/REJECTED/CANCELED/ALL` |
+| GET | `/adjustment-requests/:id` | 调整单详情 |
+| POST | `/adjustment-requests/:id/approve` | 复核批准并入账（非申请人） |
+| POST | `/adjustment-requests/:id/reject` | 复核拒绝（非申请人） |
+| POST | `/adjustment-requests/:id/cancel` | 申请人撤销待复核单 |
 
 创建批次：
 
@@ -138,6 +160,41 @@
 ```
 
 同一 `Idempotency-Key` 重试不会重复调整。
+
+**阈值内调整**：返回 `201`，响应 `meta.staged` 为 `false`，余额立即更新并写入流水。
+
+**超阈值调整**：返回 `202`，`meta.staged` 为 `true`，余额与流水均不变，响应体是一张
+`PENDING` 调整单：
+
+```json
+{
+  "data": {
+    "id": "uuid",
+    "batchId": "uuid",
+    "direction": "OUT",
+    "quantity": "300.000000",
+    "stockUnit": "g",
+    "beforeQuantity": "1000.000000",
+    "expectedAfterQuantity": "700.000000",
+    "reason": "盘点发现包装破损",
+    "status": "PENDING",
+    "requestedByUserId": "uuid"
+  },
+  "meta": { "staged": true, "reviewThresholdRatio": 0.1 }
+}
+```
+
+复核规则：
+
+- 批准（`POST /adjustment-requests/:id/approve`，可带 `{ "note": "..." }`）：
+  在**同一事务**内完成「状态 PENDING→APPROVED、更新批次余额、写入库存流水」。
+  复核人不能是申请人；批次在提交后已变化（版本或余额不符）时拒绝批准。
+- 重复批准是幂等的：已 `APPROVED` 的调整单再次批准返回 `200` 和原流水，
+  **绝不会第二次增减余额**（状态机、调整单行锁、流水 `adjustment_request_id`
+  唯一索引三重保证）。
+- 拒绝（`POST /adjustment-requests/:id/reject`，`{ "reason": "至少3字" }`）：
+  只关闭调整单，不触碰余额；复核人不能是申请人。
+- 申请人可对仍待复核的单据调用 `cancel` 撤销。
 
 ## 6. 项目与需求
 

@@ -20,6 +20,9 @@ const schema = z.object({
   PUBLIC_APP_URL: z.string().url().default("http://localhost:8080").transform((value) => new URL(value).origin),
   UPLOAD_DIR: z.string().min(1).default("./uploads"),
   MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
+  // 结余调整差异阈值：|调整数量| / 调整前结余 > 该比例时暂存待复核。
+  // 0 表示所有调整都需复核；调整前结余为 0 时任何调整都需复核。
+  ADJUSTMENT_REVIEW_THRESHOLD_RATIO: z.coerce.number().min(0).max(10).default(0.1),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info")
 });
 

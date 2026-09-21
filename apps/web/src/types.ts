@@ -138,3 +138,51 @@ export const movementLabels: Record<string, string> = {
   ADJUSTMENT_OUT: "盘减",
   REVERSAL: "撤销恢复"
 };
+
+export type AuthUser = {
+  id: string;
+  loginName: string;
+  displayName: string;
+  role: "ADMIN" | "OPERATOR";
+};
+
+export type AdjustmentRequest = {
+  id: string;
+  batchId: string;
+  batchCode: string | null;
+  materialName: string;
+  materialCode: string | null;
+  direction: "IN" | "OUT";
+  quantity: string;
+  stockUnit: string;
+  beforeQuantity: string;
+  expectedAfterQuantity: string;
+  reason: string;
+  status: "PENDING" | "APPROVED" | "REJECTED" | "CANCELED";
+  batchVersion: number;
+  requestedByUserId: string;
+  requestedByName: string | null;
+  reviewedByUserId: string | null;
+  reviewedByName: string | null;
+  reviewedAt: string | null;
+  reviewNote: string | null;
+  movementId: string | null;
+  createdAt: string;
+};
+
+export const adjustmentStatusLabels: Record<string, string> = {
+  PENDING: "待复核",
+  APPROVED: "已批准",
+  REJECTED: "已拒绝",
+  CANCELED: "已撤销"
+};
+
+export type Operator = {
+  id: string;
+  loginName: string;
+  displayName: string;
+  role: "ADMIN" | "OPERATOR";
+  deactivatedAt: string | null;
+  lastLoginAt: string | null;
+  createdAt: string;
+};

@@ -1,15 +1,63 @@
 import type { FastifyInstance } from "fastify";
-import { addQuantities, adjustmentSchema, batchCreateSchema, batchPatchSchema, compareQuantities, convertQuantity, subtractQuantities } from "@handcraft/contracts";
+import { addQuantities, adjustmentSchema, batchCreateSchema, batchPatchSchema, compareQuantities, convertQuantity, exceedsAdjustmentThreshold, subtractQuantities } from "@handcraft/contracts";
 import type { AuthenticatedRequest } from "../lib/auth.js";
-import { pool, withTransaction } from "../lib/db.js";
+import { pool, withTransaction, type DbClient } from "../lib/db.js";
 import { AppError } from "../lib/errors.js";
 import { pageMeta, parsePagination } from "../lib/pagination.js";
 import { parseInput } from "../lib/validation.js";
 import { writeAudit } from "../lib/audit.js";
 import { getIdempotencyKey } from "../lib/idempotency.js";
+import { config } from "../config.js";
 
 type Query = Record<string, string | undefined>;
 type UnitRecord = { stock_unit: string; [key: string]: unknown };
+
+/**
+ * 在已持有批次行锁的前提下应用一笔调整：更新余额、写入流水。
+ * 被“阈值内直接调整”和“暂存单批准”两条路径共用，保证两者落账方式完全一致。
+ * 必须与调用方处于同一事务/同一行锁内，批准路径由此保证复核与流水写入原子提交。
+ */
+export async function applyAdjustment(client: DbClient, params: {
+  batch: { id: string; stock_unit: string; remaining_quantity: string };
+  direction: "IN" | "OUT";
+  quantity: string;
+  reason: string;
+  actorUserId: string;
+  requestId: string;
+  adjustmentRequestId?: string;
+  idempotencyKey?: string | null;
+}): Promise<Record<string, unknown>> {
+  const { batch, direction, quantity, reason, actorUserId } = params;
+  const before = batch.remaining_quantity;
+  if (direction === "OUT" && compareQuantities(quantity, before) > 0) {
+    throw new AppError(409, "INSUFFICIENT_STOCK", "批次剩余数量不足");
+  }
+  const signed = direction === "IN" ? quantity : `-${quantity}`;
+  const after = direction === "IN" ? addQuantities(before, quantity) : subtractQuantities(before, quantity);
+  const status = compareQuantities(after, "0") === 0 ? "DEPLETED" : "ACTIVE";
+  await client.query("UPDATE batches SET remaining_quantity = $1, status = $2, version = version + 1 WHERE id = $3", [after, status, batch.id]);
+  const movement = await client.query(
+    `INSERT INTO stock_movements(batch_id, type, signed_quantity, stock_unit, before_quantity, after_quantity,
+       reference_type, reason, actor_user_id, idempotency_key, adjustment_request_id)
+     VALUES ($1, $2, $3, $4::stock_unit, $5, $6, 'ADJUSTMENT', $7, $8, $9, $10)
+     RETURNING id, batch_id AS "batchId", signed_quantity::text AS "signedQuantity",
+               before_quantity::text AS "beforeQuantity", after_quantity::text AS "afterQuantity", created_at AS "createdAt"`,
+    [
+      batch.id, direction === "IN" ? "ADJUSTMENT_IN" : "ADJUSTMENT_OUT", signed, batch.stock_unit,
+      before, after, reason, actorUserId, params.idempotencyKey ?? null, params.adjustmentRequestId ?? null
+    ]
+  );
+  await writeAudit(client, {
+    actorUserId: actorUserId,
+    action: "ADJUST",
+    entityType: "BATCH",
+    entityId: batch.id,
+    beforeData: { remainingQuantity: before },
+    afterData: { remainingQuantity: after, reason, adjustmentRequestId: params.adjustmentRequestId ?? null },
+    requestId: params.requestId
+  });
+  return movement.rows[0] as Record<string, unknown>;
+}
 
 export async function batchRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Querystring: Query }>("/batches", async (request) => {
@@ -106,7 +154,7 @@ export async function batchRoutes(app: FastifyInstance): Promise<void> {
       [request.params.id]
     );
     if (!result.rows[0]) throw new AppError(404, "NOT_FOUND", "批次不存在");
-    const [movements, colors, attachments] = await Promise.all([
+    const [movements, colors, attachments, pendingAdjustments] = await Promise.all([
       pool.query(
         `SELECT id, type, signed_quantity::text AS "signedQuantity", stock_unit AS "stockUnit",
                 before_quantity::text AS "beforeQuantity", after_quantity::text AS "afterQuantity",
@@ -125,9 +173,16 @@ export async function batchRoutes(app: FastifyInstance): Promise<void> {
         `SELECT id, original_name AS "originalName", mime_type AS "mimeType", byte_size::text AS "byteSize", created_at AS "createdAt"
            FROM attachments WHERE owner_type = 'BATCH' AND owner_id = $1 ORDER BY created_at DESC`,
         [request.params.id]
+      ),
+      pool.query(
+        `SELECT id, direction, quantity::text AS quantity, stock_unit AS "stockUnit",
+                before_quantity::text AS "beforeQuantity", expected_after_quantity::text AS "expectedAfterQuantity",
+                reason, status, requested_by_user_id AS "requestedByUserId", created_at AS "createdAt"
+           FROM adjustment_requests WHERE batch_id = $1 AND status = 'PENDING' ORDER BY created_at DESC`,
+        [request.params.id]
       )
     ]);
-    return { data: { ...result.rows[0], movements: movements.rows, colorChanges: colors.rows, attachments: attachments.rows } };
+    return { data: { ...result.rows[0], movements: movements.rows, colorChanges: colors.rows, attachments: attachments.rows, pendingAdjustments: pendingAdjustments.rows } };
   });
 
   app.post("/batches", async (request, reply) => {
@@ -244,10 +299,11 @@ export async function batchRoutes(app: FastifyInstance): Promise<void> {
     const input = parseInput(adjustmentSchema, request.body);
     const user = (request as AuthenticatedRequest).authUser;
     const idempotencyKey = getIdempotencyKey(request.headers);
-    const adjusted = await withTransaction(async (client) => {
+    const result = await withTransaction(async (client) => {
       if (idempotencyKey) {
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [idempotencyKey]);
-        const existing = await client.query(
+        // 已落账的流水（阈值内直接调整或暂存单批准后写入）
+        const existingMovement = await client.query(
           `SELECT m.id, m.batch_id AS "batchId", m.signed_quantity::text AS "signedQuantity",
                   m.before_quantity::text AS "beforeQuantity", m.after_quantity::text AS "afterQuantity",
                   m.created_at AS "createdAt"
@@ -257,9 +313,24 @@ export async function batchRoutes(app: FastifyInstance): Promise<void> {
               AND m.type IN ('ADJUSTMENT_IN', 'ADJUSTMENT_OUT')`,
           [idempotencyKey, request.params.id]
         );
-        if (existing.rows[0]) return { ...existing.rows[0], idempotent: true };
+        if (existingMovement.rows[0]) {
+          return { status: 200 as const, staged: false, payload: { ...existingMovement.rows[0], idempotent: true } };
+        }
+        // 已暂存、尚未落账的调整请求（超阈值）
+        const existingRequest = await client.query(
+          `SELECT id, batch_id AS "batchId", direction, quantity::text AS quantity,
+                  stock_unit AS "stockUnit", before_quantity::text AS "beforeQuantity",
+                  expected_after_quantity::text AS "expectedAfterQuantity", reason, status,
+                  requested_by_user_id AS "requestedByUserId", created_at AS "createdAt"
+             FROM adjustment_requests
+            WHERE idempotency_key = $1 AND batch_id = $2`,
+          [idempotencyKey, request.params.id]
+        );
+        if (existingRequest.rows[0]) {
+          return { status: 200 as const, staged: true, payload: { ...existingRequest.rows[0], idempotent: true } };
+        }
       }
-      const batchResult = await client.query<UnitRecord & { id: string; version: number; status: string; remaining_quantity: string }>(
+      const batchResult = await client.query<UnitRecord & { id: string; version: number; status: string; remaining_quantity: string; material_id: string }>(
         "SELECT * FROM batches WHERE id = $1 FOR UPDATE",
         [request.params.id]
       );
@@ -276,25 +347,63 @@ export async function batchRoutes(app: FastifyInstance): Promise<void> {
         throw new AppError(422, "UNIT_INCOMPATIBLE", "调整单位与批次库存单位不兼容");
       }
       const before = batch.remaining_quantity;
-      if (input.direction === "OUT" && compareQuantities(quantity, before) > 0) {
-        throw new AppError(409, "INSUFFICIENT_STOCK", "批次剩余数量不足");
-      }
-      const signed = input.direction === "IN" ? quantity : `-${quantity}`;
-      const after = input.direction === "IN" ? addQuantities(before, quantity) : subtractQuantities(before, quantity);
-      const status = compareQuantities(after, "0") === 0 ? "DEPLETED" : "ACTIVE";
-      await client.query("UPDATE batches SET remaining_quantity = $1, status = $2, version = version + 1 WHERE id = $3", [after, status, batch.id]);
-      const movement = await client.query(
-        `INSERT INTO stock_movements(batch_id, type, signed_quantity, stock_unit, before_quantity, after_quantity,
-           reference_type, reason, actor_user_id, idempotency_key)
-         VALUES ($1, $2, $3, $4::stock_unit, $5, $6, 'ADJUSTMENT', $7, $8, $9)
-         RETURNING id, batch_id AS "batchId", signed_quantity::text AS "signedQuantity",
-                   before_quantity::text AS "beforeQuantity", after_quantity::text AS "afterQuantity", created_at AS "createdAt"`,
-        [batch.id, input.direction === "IN" ? "ADJUSTMENT_IN" : "ADJUSTMENT_OUT", signed, batch.stock_unit, before, after, input.reason, user.id, idempotencyKey ?? null]
+      const needsReview = exceedsAdjustmentThreshold(
+        input.direction,
+        quantity,
+        before,
+        config.ADJUSTMENT_REVIEW_THRESHOLD_RATIO
       );
-      await writeAudit(client, { actorUserId: user.id, action: "ADJUST", entityType: "BATCH", entityId: batch.id, beforeData: { remainingQuantity: before }, afterData: { remainingQuantity: after, reason: input.reason }, requestId: request.id });
-      return { ...movement.rows[0], idempotent: false };
+
+      if (!needsReview) {
+        // 阈值内：直接落账（与批准路径共用同一套落账逻辑）
+        const movement = await applyAdjustment(client, {
+          batch: { id: batch.id, stock_unit: batch.stock_unit, remaining_quantity: before },
+          direction: input.direction,
+          quantity,
+          reason: input.reason,
+          actorUserId: user.id,
+          requestId: request.id,
+          idempotencyKey: idempotencyKey ?? null
+        });
+        return { status: 201 as const, staged: false, payload: { ...movement, idempotent: false } };
+      }
+
+      // 超阈值：暂存待第二位操作员复核，不改变任何余额
+      if (input.direction === "OUT" && compareQuantities(quantity, before) > 0) {
+        throw new AppError(409, "INSUFFICIENT_STOCK", "调整数量超过批次剩余数量，不能提交");
+      }
+      const expectedAfter = input.direction === "IN"
+        ? addQuantities(before, quantity)
+        : subtractQuantities(before, quantity);
+      const staged = await client.query(
+        `INSERT INTO adjustment_requests
+           (batch_id, direction, quantity, stock_unit, before_quantity, expected_after_quantity,
+            reason, batch_version, requested_by_user_id, idempotency_key)
+         VALUES ($1, $2::adjustment_direction, $3, $4::stock_unit, $5, $6, $7, $8, $9, $10)
+         RETURNING id, batch_id AS "batchId", direction, quantity::text AS quantity,
+                   stock_unit AS "stockUnit", before_quantity::text AS "beforeQuantity",
+                   expected_after_quantity::text AS "expectedAfterQuantity", reason, status,
+                   requested_by_user_id AS "requestedByUserId", created_at AS "createdAt"`,
+        [batch.id, input.direction, quantity, batch.stock_unit, before, expectedAfter, input.reason, batch.version, user.id, idempotencyKey ?? null]
+      );
+      await writeAudit(client, {
+        actorUserId: user.id,
+        action: "ADJUSTMENT_REQUEST",
+        entityType: "BATCH",
+        entityId: batch.id,
+        afterData: {
+          adjustmentRequestId: staged.rows[0]?.id,
+          direction: input.direction,
+          quantity,
+          beforeQuantity: before,
+          expectedAfterQuantity: expectedAfter,
+          reason: input.reason
+        },
+        requestId: request.id
+      });
+      return { status: 202 as const, staged: true, payload: { ...staged.rows[0], idempotent: false } };
     });
-    return reply.status(adjusted.idempotent ? 200 : 201).send({ data: adjusted });
+    return reply.status(result.status).send({ data: result.payload, meta: { staged: result.staged, reviewThresholdRatio: config.ADJUSTMENT_REVIEW_THRESHOLD_RATIO } });
   });
 
   app.get<{ Params: { id: string } }>("/batches/:id/movements", async (request) => {

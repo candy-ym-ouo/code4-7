@@ -9,7 +9,9 @@ const SESSION_DAYS = 7;
 
 export type AuthUser = {
   id: string;
+  loginName: string;
   displayName: string;
+  role: "ADMIN" | "OPERATOR";
 };
 
 export type AuthenticatedRequest = FastifyRequest & { authUser: AuthUser };
@@ -60,9 +62,12 @@ export async function authenticate(request: FastifyRequest): Promise<void> {
 
   const result = await pool.query<{
     id: string;
+    login_name: string;
     display_name: string;
+    role: "ADMIN" | "OPERATOR";
+    deactivated_at: Date | null;
   }>(
-    `SELECT u.id, u.display_name
+    `SELECT u.id, u.login_name, u.display_name, u.role, u.deactivated_at
        FROM sessions s
        JOIN users u ON u.id = s.user_id
       WHERE s.token_hash = $1
@@ -75,11 +80,24 @@ export async function authenticate(request: FastifyRequest): Promise<void> {
   if (!user) {
     throw new AppError(401, "SESSION_EXPIRED", "登录已失效，请重新登录");
   }
+  if (user.deactivated_at) {
+    throw new AppError(403, "ACCOUNT_DEACTIVATED", "该操作员账号已停用");
+  }
 
   (request as AuthenticatedRequest).authUser = {
     id: user.id,
-    displayName: user.display_name
+    loginName: user.login_name,
+    displayName: user.display_name,
+    role: user.role
   };
+}
+
+export function requireAdmin(request: FastifyRequest): AuthUser {
+  const user = (request as AuthenticatedRequest).authUser;
+  if (user.role !== "ADMIN") {
+    throw new AppError(403, "ADMIN_ONLY", "该操作仅管理员可执行");
+  }
+  return user;
 }
 
 export async function revokeSession(request: FastifyRequest): Promise<void> {

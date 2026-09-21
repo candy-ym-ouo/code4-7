@@ -49,12 +49,17 @@ async function submitAdjustment() {
   }
   saving.value = true;
   try {
-    await request(`/batches/${batch.value.id}/adjustments`, {
+    const response = await request<{ data: unknown; meta?: { staged?: boolean } }>(`/batches/${batch.value.id}/adjustments`, {
       method: "POST",
       headers: { "Idempotency-Key": createIdempotencyKey() },
       body: { ...adjustment, version: batch.value.version }
     });
-    ElMessage.success("库存调整已入账");
+    if (response.meta?.staged) {
+      ElMessage.success("调整幅度超过差异阈值，已暂存为待复核调整单，需另一位操作员复核后入账");
+      window.dispatchEvent(new CustomEvent("handcraft:pending-adjustments-changed"));
+    } else {
+      ElMessage.success("库存调整已入账");
+    }
     adjustmentVisible.value = false;
     Object.assign(adjustment, { direction: "OUT", quantity: "", reason: "" });
     await load();
@@ -145,6 +150,15 @@ onMounted(load);
           <el-button v-if="batch.status === 'DEPLETED'" type="danger" plain @click="archive">归档</el-button>
         </div>
       </header>
+      <el-alert
+        v-if="batch.pendingAdjustments && batch.pendingAdjustments.length"
+        :title="`有 ${batch.pendingAdjustments.length} 笔超阈值调整正在等待另一位操作员复核，复核前结余不会改变。`"
+        type="warning" show-icon :closable="false" style="margin-bottom:16px"
+      >
+        <template #default>
+          <router-link to="/adjustments">前往「调整复核」处理</router-link>
+        </template>
+      </el-alert>
       <section class="stat-grid">
         <article class="stat-card"><small>剩余数量</small><strong>{{ batch.remainingQuantity }} {{ batch.stockUnit }}</strong></article>
         <article class="stat-card"><small>初始数量</small><strong>{{ batch.initialQuantity }} {{ batch.stockUnit }}</strong></article>
@@ -191,6 +205,10 @@ onMounted(load);
     </template>
 
     <el-dialog v-model="adjustmentVisible" title="库存调整" width="520px">
+      <el-alert
+        title="调整幅度超过差异阈值（默认结余的 10%，或从零盘增）时不会立即入账，将暂存为待复核调整单，需由另一位操作员批准后才更新结余并写入流水。"
+        type="info" show-icon :closable="false" style="margin-bottom:16px"
+      />
       <el-form label-position="top">
         <el-form-item label="方向"><el-radio-group v-model="adjustment.direction"><el-radio value="IN">盘增</el-radio><el-radio value="OUT">盘减</el-radio></el-radio-group></el-form-item>
         <el-form-item label="数量"><el-input v-model="adjustment.quantity" /></el-form-item>

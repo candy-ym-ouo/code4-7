@@ -9,12 +9,12 @@ const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
 const loading = ref(false);
-const form = reactive({ password: "" });
+const form = reactive({ loginName: "", password: "" });
 
 async function submit() {
   loading.value = true;
   try {
-    await auth.login(form.password);
+    await auth.login(form.loginName.trim(), form.password);
     await router.push("/");
   } catch (error) {
     ElMessage.error(error instanceof ApiError ? error.message : "登录失败");
@@ -32,8 +32,8 @@ async function submit() {
       <p>登录后查看真实库存、项目消耗和颜色变化记录。</p>
       <el-alert v-if="route.query.offline" title="暂时无法连接 API，请确认服务已启动后重试。" type="warning" :closable="false" show-icon style="margin-bottom:16px" />
       <el-form label-position="top" @submit.prevent="submit">
-        <el-form-item label="操作员">
-          <el-input :model-value="auth.user?.displayName || '工作区操作员'" disabled />
+        <el-form-item label="登录账号">
+          <el-input v-model="form.loginName" maxlength="40" placeholder="操作员账号" @keyup.enter="submit" />
         </el-form-item>
         <el-form-item label="密码">
           <el-input v-model="form.password" type="password" show-password @keyup.enter="submit" />

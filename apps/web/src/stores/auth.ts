@@ -1,14 +1,16 @@
 import { defineStore } from "pinia";
 import { request, ApiError } from "@/lib/api";
-
-type User = { id: string; displayName: string };
+import type { AuthUser } from "@/types";
 
 export const useAuthStore = defineStore("auth", {
   state: () => ({
     initialized: false,
     loaded: false,
-    user: null as User | null
+    user: null as AuthUser | null
   }),
+  getters: {
+    isAdmin: (state) => state.user?.role === "ADMIN"
+  },
   actions: {
     async bootstrap() {
       if (this.loaded) return;
@@ -16,7 +18,7 @@ export const useAuthStore = defineStore("auth", {
       this.initialized = status.data.initialized;
       if (this.initialized) {
         try {
-          const session = await request<{ data: User }>("/auth/me");
+          const session = await request<{ data: AuthUser }>("/auth/me");
           this.user = session.data;
         } catch (error) {
           if (!(error instanceof ApiError) || error.status !== 401) throw error;
@@ -25,13 +27,16 @@ export const useAuthStore = defineStore("auth", {
       }
       this.loaded = true;
     },
-    async setup(displayName: string, password: string) {
-      const result = await request<{ data: User }>("/setup", { method: "POST", body: { displayName, password } });
+    async setup(loginName: string, displayName: string, password: string) {
+      const result = await request<{ data: AuthUser }>("/setup", {
+        method: "POST",
+        body: { loginName, displayName, password }
+      });
       this.initialized = true;
       this.user = result.data;
     },
-    async login(password: string) {
-      const result = await request<{ data: User }>("/auth/login", { method: "POST", body: { password } });
+    async login(loginName: string, password: string) {
+      const result = await request<{ data: AuthUser }>("/auth/login", { method: "POST", body: { loginName, password } });
       this.user = result.data;
     },
     async logout() {

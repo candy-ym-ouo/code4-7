@@ -13,6 +13,7 @@ import { authRoutes } from "./routes/auth.js";
 import { catalogRoutes } from "./routes/catalog.js";
 import { materialRoutes } from "./routes/materials.js";
 import { batchRoutes } from "./routes/batches.js";
+import { adjustmentRoutes } from "./routes/adjustments.js";
 import { projectRoutes } from "./routes/projects.js";
 import { consumptionRoutes } from "./routes/consumptions.js";
 import { colorChangeRoutes } from "./routes/colorChanges.js";
@@ -90,6 +91,7 @@ export async function buildApp(options: { runDatabaseMigrations?: boolean } = {}
     await protectedRoutes.register(catalogRoutes);
     await protectedRoutes.register(materialRoutes);
     await protectedRoutes.register(batchRoutes);
+    await protectedRoutes.register(adjustmentRoutes);
     await protectedRoutes.register(projectRoutes);
     await protectedRoutes.register(consumptionRoutes);
     await protectedRoutes.register(colorChangeRoutes);

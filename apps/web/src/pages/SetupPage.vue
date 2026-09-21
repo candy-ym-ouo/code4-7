@@ -8,7 +8,7 @@ import { ApiError } from "@/lib/api";
 const router = useRouter();
 const auth = useAuthStore();
 const loading = ref(false);
-const form = reactive({ displayName: "", password: "", confirmPassword: "" });
+const form = reactive({ loginName: "admin", displayName: "", password: "", confirmPassword: "" });
 
 async function submit() {
   if (form.password !== form.confirmPassword) {
@@ -17,7 +17,7 @@ async function submit() {
   }
   loading.value = true;
   try {
-    await auth.setup(form.displayName, form.password);
+    await auth.setup(form.loginName.trim(), form.displayName, form.password);
     ElMessage.success("工作区初始化完成");
     await router.push("/");
   } catch (error) {
@@ -33,9 +33,12 @@ async function submit() {
     <section class="auth-card">
       <div class="brand-mark" style="margin-bottom: 18px">材</div>
       <h1>建立你的材料工作区</h1>
-      <p>首次初始化会创建唯一操作员。系统不会生成任何演示材料、批次或项目，所有内容都由你从真实记录开始建立。</p>
+      <p>首次初始化会创建管理员账号。超阈值的结余调整将暂存，等待第二位操作员复核后入账。所有业务内容都由你从真实记录开始建立。</p>
       <el-form label-position="top" @submit.prevent="submit">
-        <el-form-item label="操作员名称">
+        <el-form-item label="登录账号">
+          <el-input v-model="form.loginName" maxlength="40" placeholder="字母开头，3-40 位字母、数字、_ 或 -" />
+        </el-form-item>
+        <el-form-item label="显示名称">
           <el-input v-model="form.displayName" maxlength="80" placeholder="例如：小林的工作室" />
         </el-form-item>
         <el-form-item label="密码">

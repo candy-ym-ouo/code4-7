@@ -25,6 +25,7 @@ a { color: var(--brand); text-decoration: none; }
 .side-menu { border-right: 0; background: transparent; --el-menu-text-color: #e8ded7; --el-menu-hover-bg-color: rgba(255,255,255,.08); --el-menu-active-color: #ffe0b9; }
 .side-menu .el-menu-item { margin: 4px 10px; border-radius: 9px; }
 .side-menu .el-menu-item.is-active { background: rgba(201,140,87,.22); }
+.menu-badge { margin-left: 8px; }
 .topbar { height: 64px; display: flex; align-items: center; justify-content: space-between; background: rgba(255,253,249,.9); border-bottom: 1px solid var(--line); backdrop-filter: blur(10px); }
 .topbar-kicker { display: block; color: #88766b; font-size: 11px; }
 .main-content { padding: 24px; max-width: 1600px; width: 100%; margin: 0 auto; }

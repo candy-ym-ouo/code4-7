@@ -40,6 +40,12 @@ export type ColorChangeType = (typeof colorChangeTypes)[number];
 export const attachmentOwnerTypes = ["BATCH", "COLOR_CHANGE", "PROJECT", "CONSUMPTION"] as const;
 export type AttachmentOwnerType = (typeof attachmentOwnerTypes)[number];
 
+export const userRoles = ["ADMIN", "OPERATOR"] as const;
+export type UserRole = (typeof userRoles)[number];
+
+export const adjustmentRequestStatuses = ["PENDING", "APPROVED", "REJECTED", "CANCELED"] as const;
+export type AdjustmentRequestStatus = (typeof adjustmentRequestStatuses)[number];
+
 export const unitFamilies = {
   g: { family: "MASS", base: "g", factor: "1" },
   kg: { family: "MASS", base: "g", factor: "1000" },
@@ -110,13 +116,51 @@ export function compareQuantities(left: string, right: string): number {
   return leftScaled === rightScaled ? 0 : leftScaled > rightScaled ? 1 : -1;
 }
 
+// 登录账号：3-40 位字母、数字、下划线、连字符，必须以字母开头
+export const loginNamePattern = /^[A-Za-z][A-Za-z0-9_-]{2,39}$/;
+
+/**
+ * 判断结余调整是否超过差异阈值，需要双人复核。
+ *
+ * 阈值按“调整数量 / 调整前结余”计算（百分比）。
+ * - 调整前结余为 0 时，任何正数调整（从零盘增）都需复核；
+ * - 阈值 ratio 为 0 时，所有调整都需复核；
+ * - 阈值 >= 1（且结余大于 0）时，盘增永不超限（比例无穷大的 0 结余除外）。
+ *
+ * ratio 使用与数量相同的 6 位定点整数比较，避免浮点误差。
+ */
+export function exceedsAdjustmentThreshold(direction: "IN" | "OUT", quantity: string, beforeQuantity: string, ratio: number): boolean {
+  if (compareQuantities(beforeQuantity, "0") === 0) return true;
+  if (ratio <= 0) return true;
+  if (ratio >= 1 && direction === "IN") return false;
+  const beforeScaled = toScaled(beforeQuantity);
+  const quantityScaled = toScaled(quantity);
+  // quantity / before > ratio  ⇔  quantity > before * ratio（定点比较）
+  return quantityScaled * QUANTITY_SCALE > beforeScaled * toScaled(normalizeRatio(ratio));
+}
+
+function normalizeRatio(ratio: number): string {
+  // 截断到 6 位小数以匹配 toScaled 的精度
+  const truncated = Math.trunc(ratio * 1_000_000) / 1_000_000;
+  return truncated.toFixed(6);
+}
+
 export const setupSchema = z.object({
+  loginName: z.string().trim().regex(loginNamePattern, "登录账号须以字母开头，3-40 位字母、数字、下划线或连字符"),
   displayName: z.string().trim().min(1).max(80),
   password: z.string().min(10).max(128)
 });
 
 export const loginSchema = z.object({
+  loginName: z.string().trim().min(1).max(40),
   password: z.string().min(1).max(128)
+});
+
+export const userCreateSchema = z.object({
+  loginName: z.string().trim().regex(loginNamePattern, "登录账号须以字母开头，3-40 位字母、数字、下划线或连字符"),
+  displayName: z.string().trim().min(1).max(80),
+  password: z.string().min(10).max(128),
+  role: z.enum(userRoles).default("OPERATOR")
 });
 
 export const passwordChangeSchema = z.object({
@@ -183,6 +227,14 @@ export const adjustmentSchema = z.object({
   unit: z.enum(stockUnits),
   reason: z.string().trim().min(3).max(1000),
   version: z.number().int().positive()
+});
+
+export const adjustmentReviewSchema = z.object({
+  note: z.string().trim().max(1000).optional()
+});
+
+export const adjustmentRejectSchema = z.object({
+  reason: z.string().trim().min(3).max(1000)
 });
 
 export const projectInputSchema = z.object({
